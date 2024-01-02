@@ -1,35 +1,75 @@
 """
 Usage:
-python pdf_to_images.py <path_to_pdf> <output_folder> <dpi>
+python images_to_pdf.py --input_folder <input_folder> --output_folder <output_folder> [--pages_per_pdf <num>] [--split] [--rotation_angle <angle>] [--prefix_regex <regex>]
 
-Example:
-python pdf_to_images.py document.pdf images_output 300
+This script combines images into PDF files. Supported image formats include PNG, JPG, JPEG, TIF, and TIFF. It can optionally split images into left and right pages and rotate them.
 
-- <path_to_pdf>: Path to the PDF file to be converted.
-- <output_folder>: Directory where the converted images will be saved.
-- <dpi>: Dots Per Inch (resolution) for the converted images.
-
-This script converts each page of a PDF file into separate image files. The images are stored in the specified output folder with a resolution determined by the dpi parameter.
+Options:
+- --input_folder: Directory containing the images to be combined into PDFs.
+- --output_folder: Directory where the resulting PDF files will be saved.
+- --pages_per_pdf: Optional. Number of images to include in each PDF file.
+- --split: Optional. Split images into left and right pages.
+- --rotation_angle: Optional. Rotate pages by a given angle (e.g., 180 for upside-down).
+- --prefix_regex: Optional. Regex pattern to remove from the input folder name in the PDF filename.
 """
 
+import argparse
 import sys
-from pdf2image import convert_from_path
+from PIL import Image
 import os
+import re
 
-def convert_pdf_to_images(pdf_path, output_folder, dpi=300):
+def is_image_file(filename):
+    supported_formats = ('.png', '.jpg', '.jpeg', '.tif', '.tiff')
+    return filename.lower().endswith(supported_formats)
+
+def split_image(img):
+    width, height = img.size
+    left = img.crop((0, 0, width/2, height))
+    right = img.crop((width/2, 0, width, height))
+    return left, right
+
+def combine_images_to_pdf(args):
+    input_folder = args.input_folder
+    output_folder = args.output_folder
+    pages_per_pdf = args.pages_per_pdf or float('inf')
+    split = args.split
+    rotation_angle = args.rotation_angle
+    prefix_regex = args.prefix_regex
+
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
-    convert_from_path(pdf_path, dpi=dpi, output_folder=output_folder, fmt='png')
+
+    images = sorted([img for img in os.listdir(input_folder) if is_image_file(img)], key=lambda x: x.lower())
+
+    for i in range(0, len(images), pages_per_pdf):
+        imgs = []
+        for img in images[i:i+pages_per_pdf]:
+            image_path = os.path.join(input_folder, img)
+            with Image.open(image_path).convert('RGB') as im:
+                if rotation_angle:
+                    im = im.rotate(rotation_angle, expand=True)
+                if split:
+                    imgs.extend(split_image(im))
+                else:
+                    imgs.append(im)
+
+        output_name = os.path.basename(input_folder)
+        if prefix_regex:
+            output_name = re.sub(prefix_regex, '', output_name)
+        imgs[0].save(os.path.join(output_folder, f'{output_name}_{i // pages_per_pdf + 1}.pdf'), save_all=True, append_images=imgs[1:])
 
 def main():
-    if len(sys.argv) != 4:
-        print("Usage: python pdf_to_images.py <path_to_pdf> <output_folder> <dpi>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description='Combine images into PDF files.')
+    parser.add_argument('--input_folder', required=True, help='Directory containing the images.')
+    parser.add_argument('--output_folder', required=True, help='Directory to save PDF files.')
+    parser.add_argument('--pages_per_pdf', type=int, help='Number of images per PDF file.')
+    parser.add_argument('--split', action='store_true', help='Split images into left and right pages.')
+    parser.add_argument('--rotation_angle', type=int, help='Rotate pages by this angle.')
+    parser.add_argument('--prefix_regex', type=str, help='Regex to remove from PDF filename.')
 
-    pdf_path = sys.argv[1]
-    output_folder = sys.argv[2]
-    dpi = int(sys.argv[3])
-    convert_pdf_to_images(pdf_path, output_folder, dpi)
+    args = parser.parse_args()
+    combine_images_to_pdf(args)
 
 if __name__ == '__main__':
     main()

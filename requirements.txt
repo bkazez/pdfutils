@@ -1,3 +1,5 @@
 Pillow
 opencv-python
 pdf2image
+scipy
+matplotlib

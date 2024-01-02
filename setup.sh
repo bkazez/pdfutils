@@ -7,6 +7,6 @@ echo "Activating virtual environment..."
 source venv/bin/activate
 
 echo "Installing dependencies..."
-pip install -r requirements.txt
+python3.11 -m pip install -r requirements.txt
 
 echo "Setup complete!"
