@@ -33,10 +33,14 @@ def get_histogram_peak(hist):
 
 def get_black_white_peaks(peaks):
     if len(peaks) < 2:
-        return None, None
+        if len(peaks) == 1:
+            return peaks[0]
+        else:
+            return None, None
     else:
         black_peak = peaks[0]
         white_peak = peaks[-1]
+        print(f"{black_peak}, {white_peak}")
         return float(black_peak), float(white_peak)
 
 def smooth_histogram(hist, kernel_size=5):
@@ -68,37 +72,51 @@ def save_histogram(hist, peaks, lower_bound, upper_bound, output_path):
     plt.savefig(hist_output_path)
     plt.close()
 
-def adjust_contrast_peaks(img, output_path, text_black_crop_percent, text_white_crop_percent, analysis_area_percent, peak_prominence=500, secondary_peak_ratio=0.2, debug=False):
+def adjust_contrast_peaks(img, text_black_crop_percent, text_white_crop_percent, analysis_area_percent, peak_prominence=500, secondary_peak_ratio=0.2, debug=False):
+    if img.dtype != 'uint8':
+        img = cv2.convertScaleAbs(img)
+
+    # Convert to grayscale if it is a multi-channel image
+    if len(img.shape) == 3 and img.shape[2] == 3:
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
     # Analyze the center crop for histogram adjustments
     analysis_img = get_center_crop(img, analysis_area_percent) if analysis_area_percent < 100 else img
+
     hist = cv2.calcHist([analysis_img], [0], None, [256], [0, 256]).ravel()
 
     # Find peaks in the histogram
     peaks, _ = find_peaks(hist, peak_prominence)
+    if len(peaks) == 0:
+        print("***No peaks found in histogram.")
+        return img
     peak_values = hist[peaks]
 
-    # Identify the main peak and check for significant secondary peak
-    main_peak_value = np.max(peak_values)
-    main_peak = peaks[np.argmax(peak_values)]
+    if len(peaks) == 1:
+        print("Only one peak")
+        lower_bound = float(0.0)
+        upper_bound = float(peaks[0]) * (1 - text_white_crop_percent/100.0)
+        print(f"    => {lower_bound}..{upper_bound}")
+        #save_histogram(hist, peaks, lower_bound, upper_bound, "img")
+    else:
+        lower_bound = float(peaks[0])
+        upper_bound = float(peaks[-1])
 
-    lower_bound, upper_bound = get_black_white_peaks(peaks)
-    if lower_bound is None:
-        lower_bound = np.percentile(analysis_img, 1)
-    if upper_bound is None:
-        upper_bound = np.percentile(analysis_img, 99)
-
-    # Filter out peaks less than the specified ratio of the main peak
-    significant_peaks = peak_values[peak_values >= secondary_peak_ratio * main_peak_value]
-    has_significant_secondary_peak = len(significant_peaks) > 1
-    if not has_significant_secondary_peak:
-        print("  Has significant secondary peak")
-        lower_bound = upper_bound * (text_black_crop_percent/100.0) # move it right a bit
-        upper_bound = (upper_bound - lower_bound) * (1 - text_white_crop_percent/100.0) + lower_bound # move it left a bit
-
-    print(f"    {lower_bound}..{upper_bound}")
+        # Search for significant secondary peak, which is probably a grayscale image
+        # Without a significant secondary peak is probably text-based and benefits from more aggressive histogram cropping
+        main_peak_value = np.max(peak_values)
+        significant_peaks = peak_values[peak_values >= secondary_peak_ratio * main_peak_value]
+        has_significant_secondary_peak = len(significant_peaks) > 1
+        if not has_significant_secondary_peak:
+            print("  No significant secondary peak")
+            width = upper_bound - lower_bound
+            print(f"    {lower_bound}..{upper_bound}")
+            lower_bound += width * text_black_crop_percent/100.0
+            upper_bound -= width * text_white_crop_percent/100.0
+            print(f"    => {lower_bound}..{upper_bound}")
 
     # Apply contrast adjustments to the entire image
-    adjusted_image = np.clip((img_channel_full - lower_bound) * 255 / (upper_bound - lower_bound), 0, 255)
+    adjusted_image = np.clip((img - lower_bound) * 255 / (upper_bound - lower_bound), 0, 255)
 
     return adjusted_image
 
@@ -115,24 +133,16 @@ def refine_contrast_bounds(hist, total_pixels, low_val, high_val, pixel_threshol
 
     return low_val, high_val
 
-def adjust_contrast_stddev(image, num_std=2, channel='green', pixel_percentage=None):
-    # Select the specified color channel
-    if channel == 'green':
-        img_channel = img[:, :, 1]  # Green channel
-    elif channel == 'red':
-        img_channel = img[:, :, 2]  # Red channel
-    elif channel == 'blue':
-        img_channel = img[:, :, 0]  # Blue channel
-    else:
-        img_channel = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # Convert to grayscale
-
-    median = np.median(img_channel)
+def adjust_contrast_stddev(img, num_std=2, pixel_percentage=None):
+    median = np.median(img)
     std = np.std(img_channel)
 
     lower_bound = max(median - num_std * std, 0)
     upper_bound = min(median + num_std * std, 255)
 
     # Calculate histogram
+    if img.dtype != 'uint8':
+        img = cv2.convertScaleAbs(img)
     hist = cv2.calcHist([img_channel], [0], None, [256], [0, 256]).ravel()
     total_pixels = sum(hist)
 
@@ -143,15 +153,21 @@ def adjust_contrast_stddev(image, num_std=2, channel='green', pixel_percentage=N
     lower_bound, upper_bound = refine_contrast_bounds(hist, total_pixels, lower_bound, upper_bound, pixel_threshold)
 
     # Apply contrast stretching
-    adjusted_img = np.clip((img_channel - lower_bound) * 255 / (upper_bound - lower_bound), 0, 255)
+    img = np.clip((img - lower_bound) * 255 / (upper_bound - lower_bound), 0, 255)
 
-    return adjusted_img.astype(np.uint8)
+    return img.astype(np.uint8)
 
 # autocrop
 
-def find_border_contour(image, threshold_value=100):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, threshold_value, 255, cv2.THRESH_BINARY)
+def find_border_contour(image, threshold=100):
+    # Check whether the image is already grayscale
+    if len(image.shape) == 2 or image.shape[2] == 1:
+        gray = image
+    else:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    gray = gray.astype(np.uint8)
+    _, thresh = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     largest_contour = max(contours, key=cv2.contourArea)
     return largest_contour
@@ -160,18 +176,35 @@ def draw_contour(image, contour):
     cv2.drawContours(image, [contour], -1, (0, 0, 255), 2)
     return image
 
-def autocrop_image(image, threshold_value, contraction_percent, debug=False):
-    border_contour = find_border_contour(image, threshold_value)
-    image_with_contour = draw_contour(image.copy(), border_contour) if debug else image.copy()
+def autocrop(image, threshold, contraction_percent, debug=False):
+    border_contour = find_border_contour(image, threshold)
 
     # Bounding rectangle
     x_bound, y_bound, w_bound, h_bound = cv2.boundingRect(border_contour)
 
-    # Check if crop area is less than 50% of the original image
+    # Check if crop area is unexpectedly small
     original_area = image.shape[0] * image.shape[1]
     cropped_area = w_bound * h_bound
     if cropped_area < 0.5 * original_area:
         print(f"***Cropped image would be only {w_bound}x{h_bound}. Skipping crop.")
+        if debug:
+            import uuid
+
+            # Convert the image to 8-bit if it's not
+            if image.dtype == 'float64':  # Check if image depth is 64F
+                image_8bit = cv2.convertScaleAbs(image)
+            else:
+                image_8bit = image
+
+            # Convert grayscale image to BGR color image for contour drawing
+            if len(image_8bit.shape) == 2:  # Grayscale image has 2 dimensions
+                image_color = cv2.cvtColor(image_8bit, cv2.COLOR_GRAY2BGR)
+            else:
+                image_color = image_8bit.copy()
+
+            image_with_contour = draw_contour(image_color, border_contour)
+            cv2.imwrite(os.path.expanduser('~/Desktop/' + str(uuid.uuid4()) + '.png'), image_with_contour)
+
         return image_with_contour, image  # Return the original image if cropping condition is not met
 
     # Fit rectangle
@@ -204,14 +237,21 @@ def autocrop_image(image, threshold_value, contraction_percent, debug=False):
 
 # rotate
 
-def rotate(img)
-    img.rotate(rotation_angle, expand=True)
+import cv2
+
+def rotate(img, angle):
+    (h, w) = img.shape[:2]
+    center = (w // 2, h // 2)
+
+    # Get the rotation matrix and then apply the affine warp
+    M = cv2.getRotationMatrix2D(center, angle, 1.0)
+    rotated = cv2.warpAffine(img, M, (w, h))
+    return rotated
 
 # split
 
 def split(img):
-    width, height = img.size
-    left = img.crop((0, 0, width/2, height))
-    right = img.crop((width/2, 0, width, height))
+    height, width = img.shape[:2]
+    left = img[:, 0:width//2]
+    right = img[:, width//2:width]
     return left, right
-

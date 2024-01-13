@@ -18,10 +18,6 @@ from PIL import Image
 import os
 import re
 
-def is_image_file(filename):
-    supported_formats = ('.png', '.jpg', '.jpeg', '.tif', '.tiff')
-    return filename.lower().endswith(supported_formats)
-
 def numerical_sort_key(filename):
     numbers = map(int, re.findall(r'\d+', filename))
     return tuple(numbers)

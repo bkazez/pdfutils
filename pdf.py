@@ -1,25 +1,32 @@
-import os
-import re
 from PIL import Image
+import os
 
-from .img import is_image_file
+def images_to_pdf(input_folder, output_folder, output_name, pages_per_pdf=None):
+    images = sorted([img for img in os.listdir(input_folder) if img.lower().endswith(('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp'))], key=lambda x: x.lower())
 
-def images_to_pdf(input_folder, output_folder, pages_per_pdf=None, prefix_regex=None):
-    pages_per_pdf = pages_per_pdf or float('inf')
+    if not pages_per_pdf:
+        pages_per_pdf = len(images)
 
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
+    # Handle the case when there are no images or pages_per_pdf is None/zero
+    if not images:
+        print("*** No images to process!")
+        return
 
-    images = sorted([img for img in os.listdir(input_folder) if is_image_file(os.path.join(input_folder, img))], key=lambda x: x.lower())
+    pages_per_pdf = min(pages_per_pdf, len(images))  # Ensure pages_per_pdf doesn't exceed the number of images
 
     for i in range(0, len(images), pages_per_pdf):
         imgs = []
-        for img in images[i:i+pages_per_pdf]:
+        for img in images[i:i + pages_per_pdf]:
             image_path = os.path.join(input_folder, img)
             with Image.open(image_path).convert('RGB') as im:
                 imgs.append(im)
 
-        output_name = os.path.basename(input_folder)
-        if prefix_regex:
-            output_name = re.sub(prefix_regex, '', output_name)
-        imgs[0].save(os.path.join(output_folder, f'{output_name}_{i // pages_per_pdf + 1}.pdf'), save_all=True, append_images=imgs[1:])
+        # Format the output file name
+        output_pdf_path = os.path.join(output_folder, f'{output_name}.pdf') if pages_per_pdf >= len(images) else os.path.join(output_folder, f'{output_name}_{i // pages_per_pdf + 1}.pdf')
+
+        # Saving the PDF only if there are images
+        if imgs:
+            imgs[0].save(output_pdf_path, save_all=True, append_images=imgs[1:])
+
+# Example usage
+# images_to_pdf('path/to/input_folder', 'path/to/output_folder', 'output_name', pages_per_pdf=None)
