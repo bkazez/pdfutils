@@ -109,8 +109,8 @@ def adjust_contrast_peaks(img, text_black_crop_percent, text_white_crop_percent,
         has_significant_secondary_peak = len(significant_peaks) > 1
         if not has_significant_secondary_peak:
             print("  No significant secondary peak")
-            width = upper_bound - lower_bound
             print(f"    {lower_bound}..{upper_bound}")
+            width = upper_bound - lower_bound
             lower_bound += width * text_black_crop_percent/100.0
             upper_bound -= width * text_white_crop_percent/100.0
             print(f"    => {lower_bound}..{upper_bound}")
@@ -159,14 +159,16 @@ def adjust_contrast_stddev(img, num_std=2, pixel_percentage=None):
 
 # autocrop
 
-def find_border_contour(image, threshold=100):
+def find_border_contour(image, threshold=150):
     # Check whether the image is already grayscale
     if len(image.shape) == 2 or image.shape[2] == 1:
         gray = image
     else:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
     gray = gray.astype(np.uint8)
+
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+
     _, thresh = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     largest_contour = max(contours, key=cv2.contourArea)
@@ -178,66 +180,57 @@ def draw_contour(image, contour):
 
 def autocrop(image, threshold, contraction_percent, debug=False):
     border_contour = find_border_contour(image, threshold)
+    if border_contour is None:
+        print("***No contour found. Returning original image.")
+        return image
 
-    # Bounding rectangle
-    x_bound, y_bound, w_bound, h_bound = cv2.boundingRect(border_contour)
+    # Calculate bounding rectangle and contract it
+    x, y, w, h = cv2.boundingRect(border_contour)
+    contraction = contraction_percent / 100.0
+    new_width = int(w * (1 - contraction))
+    new_height = int(h * (1 - contraction))
+    new_x = x + int((w - new_width) / 2)
+    new_y = y + int((h - new_height) / 2)
 
-    # Check if crop area is unexpectedly small
-    original_area = image.shape[0] * image.shape[1]
-    cropped_area = w_bound * h_bound
-    if cropped_area < 0.5 * original_area:
-        print(f"***Cropped image would be only {w_bound}x{h_bound}. Skipping crop.")
-        if debug:
-            import uuid
-
-            # Convert the image to 8-bit if it's not
-            if image.dtype == 'float64':  # Check if image depth is 64F
-                image_8bit = cv2.convertScaleAbs(image)
-            else:
-                image_8bit = image
-
-            # Convert grayscale image to BGR color image for contour drawing
-            if len(image_8bit.shape) == 2:  # Grayscale image has 2 dimensions
-                image_color = cv2.cvtColor(image_8bit, cv2.COLOR_GRAY2BGR)
-            else:
-                image_color = image_8bit.copy()
-
-            image_with_contour = draw_contour(image_color, border_contour)
-            cv2.imwrite(os.path.expanduser('~/Desktop/' + str(uuid.uuid4()) + '.png'), image_with_contour)
-
-        return image_with_contour, image  # Return the original image if cropping condition is not met
-
-    # Fit rectangle
-    rect = cv2.minAreaRect(border_contour)
-    box = cv2.boxPoints(rect)
-    box = np.intp(box)
-    x_fit, y_fit, w_fit, h_fit = cv2.boundingRect(box)
-
-    # Average of the coordinates and dimensions
-    x_avg = (x_bound + x_fit) // 2
-    y_avg = (y_bound + y_fit) // 2
-    w_avg = (w_bound + w_fit) // 2
-    h_avg = (h_bound + h_fit) // 2
-
-    # Apply contraction
-    contract_pixels_w = int(w_avg * contraction_percent / 100)
-    contract_pixels_h = int(h_avg * contraction_percent / 100)
-
-    # Cropped image
-    cropped_image = image[y_avg + contract_pixels_h:y_avg + h_avg - contract_pixels_h,
-                          x_avg + contract_pixels_w:x_avg + w_avg - contract_pixels_w]
-
-    # Debug mode: Save the image with contour
+    # Debug mode: write the contour and rectangle on the image
     if debug:
-        image_with_contour = draw_contour(image.copy(), border_contour)
-    else:
-        image_with_contour = image.copy()
+        import uuid
 
-    return image_with_contour, cropped_image
+        image = image.copy()
+
+        # Convert the image to 8-bit if it's not
+        if image.dtype == 'float64':  # Check if image depth is 64F
+            image_8bit = cv2.convertScaleAbs(image)
+        else:
+            image_8bit = image
+
+        # Convert grayscale image to BGR color image for contour drawing
+        if len(image_8bit.shape) == 2:  # Grayscale image has 2 dimensions
+            image_color = cv2.cvtColor(image_8bit, cv2.COLOR_GRAY2BGR)
+        else:
+            image_color = image_8bit.copy()
+
+        cv2.drawContours(image_color, [border_contour], -1, (0, 255, 0), 3)  # Green contour
+        cv2.rectangle(image_color, (new_x, new_y), (new_x + new_width, new_y + new_height), (0, 0, 255), 3)  # red rectangle
+        debug_filename = os.path.expanduser(f'~/Desktop/{str(uuid.uuid4())}.png')
+        cv2.imwrite(debug_filename, image_color)
+
+    # Check if the resulting crop would be < 0.5 * original_area
+    original_area = image.shape[0] * image.shape[1]
+    cropped_area = new_width * new_height
+    if cropped_area < 0.5 * original_area:
+        print(f"***Cropped image would be only {new_width}x{new_height}. Skipping crop.")
+        return image
+
+    # Crop and return the image
+    cropped_image = image[new_y:new_y+new_height, new_x:new_x+new_width]
+    if cropped_image.size == 0:
+        print("***Cropping resulted in an empty image. Returning original image.")
+        return image
+
+    return cropped_image
 
 # rotate
-
-import cv2
 
 def rotate(img, angle):
     (h, w) = img.shape[:2]
