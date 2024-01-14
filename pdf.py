@@ -2,6 +2,7 @@ from PIL import Image
 import os
 
 def images_to_pdf(input_folder, output_folder, output_name, pages_per_pdf=None):
+    output_name = os.path.splitext(os.path.basename(output_name))[0] # we add the .pdf ourselves
     images = sorted([img for img in os.listdir(input_folder) if img.lower().endswith(('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp'))], key=lambda x: x.lower())
 
     if not pages_per_pdf:
