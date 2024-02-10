@@ -43,18 +43,6 @@ def get_black_white_peaks(peaks):
         print(f"{black_peak}, {white_peak}")
         return float(black_peak), float(white_peak)
 
-def smooth_histogram(hist, kernel_size=5):
-    """
-    Smooth the histogram using a moving average (convolution with a uniform kernel).
-
-    Args:
-    - hist: The histogram array.
-    - kernel_size: The size of the convolution kernel (window size for moving average).
-    """
-    kernel = np.ones(kernel_size) / kernel_size
-    hist_smooth = np.convolve(hist, kernel, mode='same')
-    return hist_smooth
-
 def save_histogram(output_path, hist, peaks, lower_bound, upper_bound):
     import matplotlib.pyplot as plt
 
@@ -72,7 +60,19 @@ def save_histogram(output_path, hist, peaks, lower_bound, upper_bound):
     plt.savefig(hist_output_path)
     plt.close()
 
-def adjust_contrast_peaks(img, text_black_crop_percent, text_white_crop_percent, analysis_area_percent, peak_prominence=500, secondary_peak_ratio=0.2, maintain_color=False, min_histogram_width=55, debug=False, output_path=None):
+def smooth_histogram(hist, kernel_size=5):
+    """
+    Smooth the histogram using a moving average (convolution with a uniform kernel).
+
+    Args:
+    - hist: The histogram array.
+    - kernel_size: The size of the convolution kernel (window size for moving average).
+    """
+    kernel = np.ones(kernel_size) / kernel_size
+    hist_smooth = np.convolve(hist, kernel, mode='same')
+    return hist_smooth
+
+def adjust_contrast_peaks(img, text_black_crop_percent=37, text_white_crop_percent=11, analysis_area_percent=80, peak_prominence=25000, min_distance_between_peaks=25, secondary_peak_ratio=0.05, maintain_color=False, min_histogram_width=40, debug=False, output_path=None):
     if img.dtype != 'uint8':
         img = cv2.convertScaleAbs(img)
 
@@ -95,38 +95,34 @@ def adjust_contrast_peaks(img, text_black_crop_percent, text_white_crop_percent,
     hist = cv2.calcHist([analysis_img], [0], None, [256], [0, 256]).ravel()
 
     # Find peaks in the histogram
-    peaks, _ = find_peaks(hist, peak_prominence)
+    peaks, _ = find_peaks(hist, prominence=peak_prominence, distance=min_distance_between_peaks)
     if len(peaks) == 0:
         print("***No peaks found in histogram.")
         return img
     peak_values = hist[peaks]
 
     if len(peaks) == 1:
-        print("Only one peak")
-        lower_bound = float(0.0)
-        upper_bound = float(peaks[0]) * (1 - text_white_crop_percent/100.0)
-        print(f"    => {lower_bound}..{upper_bound}")
-    else:
-        lower_bound = float(peaks[0])
-        upper_bound = float(peaks[-1])
+        # Text
+        print("  Only one peak")
+        lower_bound = 60 # start a quarter of the way in
+        upper_bound = float(peaks[0])
 
-        # Search for significant secondary peak, which is probably a grayscale image
-        # Without a significant secondary peak is probably text-based and benefits from more aggressive histogram cropping
-        main_peak_value = np.max(peak_values)
-        significant_peaks = peak_values[peak_values >= secondary_peak_ratio * main_peak_value]
-        has_significant_secondary_peak = len(significant_peaks) > 1
-        if not has_significant_secondary_peak:
-            print("  No significant secondary peak")
-            print(f"    {lower_bound}..{upper_bound}")
-            width = upper_bound - lower_bound
+        # Crop more aggressively, based on the width
+        width = upper_bound - lower_bound
+        if width > min_histogram_width:
             lower_bound += width * text_black_crop_percent/100.0
             upper_bound -= width * text_white_crop_percent/100.0
-            print(f"    => {lower_bound}..{upper_bound}")
+    else:
+        # Photo
+        lower_bound = 60 # start a quarter of the way in
+        upper_bound = np.percentile(analysis_img, 97)
 
     if (upper_bound - lower_bound) < min_histogram_width:
-        lower_bound = 30
-        upper_bound = 210
-        print(f"recalc using percentiles {text_black_crop_percent}->{100 - text_white_crop_percent}: [{lower_bound}, {upper_bound}]")
+        # Crop based on percentiles
+        print(f"  too narrow: [{lower_bound}, {upper_bound}]")
+        lower_bound = np.percentile(analysis_img, 3)
+        upper_bound = np.percentile(analysis_img, 97)
+        print(f"    recalculated: [{lower_bound}, {upper_bound}]")
 
     if debug and output_path:
         save_histogram(output_path, hist, peaks, lower_bound, upper_bound)
