@@ -55,7 +55,7 @@ def smooth_histogram(hist, kernel_size=5):
     hist_smooth = np.convolve(hist, kernel, mode='same')
     return hist_smooth
 
-def save_histogram(hist, peaks, lower_bound, upper_bound, output_path):
+def save_histogram(output_path, hist, peaks, lower_bound, upper_bound):
     import matplotlib.pyplot as plt
 
     plt.figure()
@@ -72,7 +72,7 @@ def save_histogram(hist, peaks, lower_bound, upper_bound, output_path):
     plt.savefig(hist_output_path)
     plt.close()
 
-def adjust_contrast_peaks(img, text_black_crop_percent, text_white_crop_percent, analysis_area_percent, peak_prominence=500, secondary_peak_ratio=0.2, maintain_color=False, debug=False):
+def adjust_contrast_peaks(img, text_black_crop_percent, text_white_crop_percent, analysis_area_percent, peak_prominence=500, secondary_peak_ratio=0.2, maintain_color=False, min_histogram_width=55, debug=False, output_path=None):
     if img.dtype != 'uint8':
         img = cv2.convertScaleAbs(img)
 
@@ -88,10 +88,6 @@ def adjust_contrast_peaks(img, text_black_crop_percent, text_white_crop_percent,
     else:
         if len(img.shape) == 3 and img.shape[2] == 3:
             img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    # Convert to grayscale if it is a multi-channel image
-    if len(img.shape) == 3 and img.shape[2] == 3:
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
     # Analyze the center crop for histogram adjustments
     analysis_img = get_center_crop(img, analysis_area_percent) if analysis_area_percent < 100 else img
@@ -110,7 +106,6 @@ def adjust_contrast_peaks(img, text_black_crop_percent, text_white_crop_percent,
         lower_bound = float(0.0)
         upper_bound = float(peaks[0]) * (1 - text_white_crop_percent/100.0)
         print(f"    => {lower_bound}..{upper_bound}")
-        #save_histogram(hist, peaks, lower_bound, upper_bound, "img")
     else:
         lower_bound = float(peaks[0])
         upper_bound = float(peaks[-1])
@@ -127,6 +122,14 @@ def adjust_contrast_peaks(img, text_black_crop_percent, text_white_crop_percent,
             lower_bound += width * text_black_crop_percent/100.0
             upper_bound -= width * text_white_crop_percent/100.0
             print(f"    => {lower_bound}..{upper_bound}")
+
+    if (upper_bound - lower_bound) < min_histogram_width:
+        lower_bound = 30
+        upper_bound = 210
+        print(f"recalc using percentiles {text_black_crop_percent}->{100 - text_white_crop_percent}: [{lower_bound}, {upper_bound}]")
+
+    if debug and output_path:
+        save_histogram(output_path, hist, peaks, lower_bound, upper_bound)
 
     # Apply contrast adjustments
     if maintain_color:
@@ -229,7 +232,7 @@ def draw_contour(image, contour):
     cv2.drawContours(image, [contour], -1, (0, 0, 255), 2)
     return image
 
-def autocrop(image, threshold, contraction_percent, debug=False):
+def autocrop(image, output_path, threshold, contraction_percent, debug=False):
     border_contour = find_border_contour(image, threshold)
     if border_contour is None:
         print("***No contour found. Returning original image.")
