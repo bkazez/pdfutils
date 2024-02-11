@@ -78,7 +78,7 @@ def smooth_histogram(hist, kernel_size=5):
     hist_smooth = np.convolve(hist, kernel, mode='same')
     return hist_smooth
 
-def search_boundary(start, end, condition):
+def search_boundary(start, end, condition, debug=False):
     """
     Searches for a boundary within a range based on a given condition, automatically determining the search direction.
 
@@ -92,13 +92,16 @@ def search_boundary(start, end, condition):
     """
     step = 1 if start <= end else -1
     for i in range(start, end + step, step):  # Adjusted to include 'end' in the search range
+        if debug:
+            print(i)
         if condition(i):
             return i
+    print("NOT FOUND")
     return None
 
-def add_debug_overlay(adjusted_img, hist, peaks, lower_bound, upper_bound, original_shape):
+def get_debug_overlay(adjusted_img, hist, peaks, lower_bound, upper_bound):
     """
-    Adds a debug overlay with histogram on the adjusted image.
+    Returns a debug overlay with histogram on the adjusted image.
 
     Parameters:
     - adjusted_img: The image after contrast adjustment.
@@ -108,28 +111,21 @@ def add_debug_overlay(adjusted_img, hist, peaks, lower_bound, upper_bound, origi
     - original_shape: The shape of the original image before adjustment.
 
     Returns:
-    - The adjusted image with histogram overlay for debugging.
+    - The histogram, ready for overlaying.
     """
     if len(adjusted_img.shape) == 2:  # If grayscale, convert to BGR
         adjusted_img = cv2.cvtColor(adjusted_img, cv2.COLOR_GRAY2BGR)
 
     hist_img = plot_histogram(hist, peaks, lower_bound, upper_bound)
-    h, w = original_shape[:2]  # Use the original image's shape for reference
-
+    h, w = adjusted_img.shape[:2]  # Use the original image's shape for reference
     max_hist_width = w // 4
     max_hist_height = h // 4
     scale_factor = min(max_hist_width / hist_img.shape[1], max_hist_height / hist_img.shape[0])
 
     hist_img_resized = cv2.resize(hist_img, (int(hist_img.shape[1] * scale_factor), int(hist_img.shape[0] * scale_factor)))
+    return hist_img_resized
 
-    overlay_start_y = h - hist_img_resized.shape[0]
-    overlay_start_x = 0
-
-    adjusted_img[overlay_start_y:h, overlay_start_x:overlay_start_x + hist_img_resized.shape[1]] = hist_img_resized
-
-    return adjusted_img
-
-def adjust_contrast_peaks(img, analysis_area_percent=60, peak_prominence=25000, min_distance_between_peaks=25, maintain_color=False, min_histogram_width=80, text_threshold_percent=0.05, image_threshold_percent=0.01, debug=False):
+def adjust_contrast_peaks(img, analysis_area_percent=60, peak_prominence=50000, min_distance_between_peaks=25, maintain_color=False, min_histogram_width=50, text_threshold_percent=0.02, image_threshold_percent=0.01, text_upper_bound_ratio=0.3, force_image=False, debug=False):
     if img.dtype != 'uint8':
         img = cv2.convertScaleAbs(img)
 
@@ -155,7 +151,7 @@ def adjust_contrast_peaks(img, analysis_area_percent=60, peak_prominence=25000, 
     peaks, _ = find_peaks(hist, prominence=peak_prominence, distance=min_distance_between_peaks)
     if len(peaks) == 0:
         print("***No peaks found in histogram.")
-        return img
+        return original_img, None
 
     rightmost_peak = peaks[-1]
     lower_bound, upper_bound = None, None
@@ -166,38 +162,41 @@ def adjust_contrast_peaks(img, analysis_area_percent=60, peak_prominence=25000, 
     text_threshold = text_threshold_percent / 100 * analysis_img.size
     image_threshold = image_threshold_percent / 100 * analysis_img.size
 
-    if len(peaks) == 1:
-        # Likely text, so it benefits from aggressive cropping (to yield white paper and crisp black).
-        lower_bound = search_boundary(
-            start=1,
-            end=rightmost_peak,
-            condition=lambda i: hist[i] > text_threshold and slopes[i-1] > 20
-        ) or 0
-        upper_bound = search_boundary(
-            start=rightmost_peak,
-            end=lower_bound,
-            condition=lambda i: slopes[i-1] > 10000
-        )
-    else:
+    if len(peaks) > 1 or force_image:
         # Likely images, so don't crop the histogram too aggressively.
         lower_bound = search_boundary(
             start=1,
             end=rightmost_peak,
             condition=lambda i: hist[i] > image_threshold
-        ) or 0
+        ) or min(50, np.percentile(analysis_img, 1))
         upper_bound = search_boundary(
             start=rightmost_peak + 1,
             end=len(hist) - 1,
-            condition=lambda i: hist[i] < image_threshold*10
-        )
+            condition=lambda i: hist[i] < image_threshold
+        ) or np.percentile(analysis_img, 99)
+    else:
+        # Likely text, so it benefits from aggressive cropping (to yield white paper and crisp black).
+        lower_bound = search_boundary(
+            start=int(0.05 * len(hist)), # avoid outliers
+            end=rightmost_peak,
+            condition=lambda i: hist[i] > image_threshold
+        ) or min(50, np.percentile(analysis_img, 1))
+        upper_bound = search_boundary(
+            start=rightmost_peak,
+            end=lower_bound,
+            condition=lambda i: hist[i] < text_upper_bound_ratio * hist[rightmost_peak]
+        ) or np.percentile(analysis_img, 99)
 
     if lower_bound == 0:
+        print("LOWER BOUND NOT FOUND")
         lower_bound = min(50, np.percentile(analysis_img, 1))
     if not upper_bound:
+        print("UPPER BOUND NOT FOUND")
         upper_bound = np.percentile(analysis_img, 99)
 
     # Ensure minimum histogram width is met
     if upper_bound - lower_bound < min_histogram_width:
+        print("Histogram too narrow; updating to minimum width")
         # Attempt to move lower_bound leftward
         lower_bound = max(upper_bound - min_histogram_width, 0)
 
@@ -206,18 +205,30 @@ def adjust_contrast_peaks(img, analysis_area_percent=60, peak_prominence=25000, 
             upper_bound = min(lower_bound + min_histogram_width, len(hist) - 1)
 
     # Apply contrast adjustments
+    h, w = img.shape[:2]
+    if debug:
+        # Define the top half of the image for contrast adjustments
+        apply_region = (0, h // 2)
+    else:
+        # Apply to the entire image if not in debug mode
+        apply_region = (0, h)
+
     if maintain_color:
-        l_channel = np.clip((img.astype(float) - lower_bound) * 255 / (upper_bound - lower_bound), 0, 255).astype('uint8')
+        # Convert the entire image to LAB but adjust only the specified region's L channel
         lab_img = cv2.cvtColor(original_img, cv2.COLOR_BGR2LAB)
-        lab_img[..., 0] = l_channel
+        l_channel = lab_img[..., 0]
+        l_channel_adjusted = np.clip((l_channel[apply_region[0]:apply_region[1]].astype(float) - lower_bound) * 255 / (upper_bound - lower_bound), 0, 255).astype('uint8')
+        lab_img[apply_region[0]:apply_region[1], ..., 0] = l_channel_adjusted
         adjusted_img = cv2.cvtColor(lab_img, cv2.COLOR_LAB2BGR)
     else:
-        adjusted_img = np.clip((img.astype(float) - lower_bound) * 255 / (upper_bound - lower_bound), 0, 255).astype('uint8')
+        adjusted_img = img.copy()  # Ensure original image is not modified
+        adjusted_img[apply_region[0]:apply_region[1]] = np.clip((adjusted_img[apply_region[0]:apply_region[1]].astype(float) - lower_bound) * 255 / (upper_bound - lower_bound), 0, 255).astype('uint8')
 
+    debug_overlay = None
     if debug:
-        adjusted_img = add_debug_overlay(adjusted_img, hist, peaks, lower_bound, upper_bound, img.shape)
+        debug_overlay = get_debug_overlay(adjusted_img, hist, peaks, lower_bound, upper_bound)
 
-    return adjusted_img
+    return adjusted_img, debug_overlay
 
 # adjust_contrast_stddev
 
