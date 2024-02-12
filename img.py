@@ -125,7 +125,7 @@ def get_debug_overlay(adjusted_img, hist, peaks, lower_bound, upper_bound):
     hist_img_resized = cv2.resize(hist_img, (int(hist_img.shape[1] * scale_factor), int(hist_img.shape[0] * scale_factor)))
     return hist_img_resized
 
-def adjust_contrast_peaks(img, analysis_area_percent=60, peak_prominence=50000, min_distance_between_peaks=25, maintain_color=False, min_histogram_width=50, text_threshold_percent=0.02, image_threshold_percent=0.01, text_upper_bound_ratio=0.3, force_image=False, debug=False):
+def adjust_contrast_peaks(img, analysis_area_percent=60, peak_prominence=40000, min_distance_between_peaks=25, maintain_color=False, min_histogram_width=50, text_threshold_percent=0.02, image_threshold_percent=0.01, text_upper_bound_ratio=0.3, force_image=False, debug=False):
     if img.dtype != 'uint8':
         img = cv2.convertScaleAbs(img)
 
@@ -151,7 +151,7 @@ def adjust_contrast_peaks(img, analysis_area_percent=60, peak_prominence=50000, 
     peaks, _ = find_peaks(hist, prominence=peak_prominence, distance=min_distance_between_peaks)
     if len(peaks) == 0:
         print("***No peaks found in histogram.")
-        return original_img, None
+        return img, None
 
     rightmost_peak = peaks[-1]
     lower_bound, upper_bound = None, None
